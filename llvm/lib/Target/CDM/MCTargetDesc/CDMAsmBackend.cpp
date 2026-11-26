@@ -60,6 +60,12 @@ void CDMAsmBackend::adjustFixupValue(const MCFixup &Fixup,
                       "operand value outside of 16-bit integer range");
     }
     break;
+  case FK_Data_4:
+    if (!isInt<32>(Value) && !isUInt<32>(Value)) {
+      Ctx.reportError(Fixup.getLoc(),
+                      "operand value outside of 32-bit integer range");
+    }
+    break;
   }
 }
 
@@ -68,12 +74,12 @@ void CDMAsmBackend::applyFixup(const MCFragment &Fragment, const MCFixup &Fixup,
                                MutableArrayRef<char> Data, uint64_t Value,
                                bool IsResolved) {
   if (!IsResolved) {
-    if (Fixup.getKind() == FK_Data_2) {
+    if (Fixup.getKind() == FK_Data_2 || Fixup.getKind() == FK_Data_4) {
       Asm->getWriter().recordRelocation(Fragment, Fixup, Target, Value);
     } else {
       getContext().reportError(
           Fixup.getLoc(),
-          "only 2-byte absolute address relocations are supported");
+          "only 2-byte and 4-byte absolute address relocations are supported");
       return;
     }
   }

@@ -4,6 +4,13 @@
 
 #include "CDMRegisterInfo.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/MC/MCDwarf.h"
+#include "llvm/Support/LEB128.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -206,7 +213,7 @@ Register CDMRegisterInfo::huntRegister(MachineBasicBlock &MBB,
   assert(MI != MBB.end() && "MI must not be MBB.end()");
 
   const MachineRegisterInfo &MRegInfo = MBB.getParent()->getRegInfo();
-  const MachineFunction &MF = *MBB.getParent();
+  MachineFunction &MF = *MBB.getParent();
 
   RegSmallSet Used;
   for (const MCPhysReg *I = MRegInfo.getCalleeSavedRegs(); *I; I++) {
@@ -269,15 +276,60 @@ Register CDMRegisterInfo::huntRegister(MachineBasicBlock &MBB,
   }
 
   for (Register Reg : GPR) {
-    if (!LiveInMI.contains(Reg)) {
-      const auto *InstrInfo = MBB.getParent()->getSubtarget().getInstrInfo();
-      BuildMI(MBB, MI, MI->getDebugLoc(), InstrInfo->get(CDM::PUSH))
-          .addReg(Reg, RegState::Kill);
-      BuildMI(MBB, std::next(MI), MI->getDebugLoc(), InstrInfo->get(CDM::POP),
-              Reg);
+    if (LiveInMI.contains(Reg))
+      continue;
 
-      return Reg;
+    const auto *InstrInfo = MF.getSubtarget().getInstrInfo();
+    const auto *RegInfo = MF.getSubtarget().getRegisterInfo();
+    const auto &CSI = MF.getFrameInfo().getCalleeSavedInfo();
+
+    bool DescribeSpill =
+        MF.getInfo<CDMMachineFunctionInfo>()->isInterruptHandler() &&
+        llvm::none_of(CSI, [Reg](const CalleeSavedInfo &Info) {
+          return Info.getReg() == Reg.asMCReg();
+        });
+
+    auto EmitCFI = [&](MachineBasicBlock::iterator Pos,
+                       const MCCFIInstruction &Inst) {
+      unsigned Index = MF.addFrameInst(Inst);
+      BuildMI(MBB, Pos, MI->getDebugLoc(),
+              InstrInfo->get(TargetOpcode::CFI_INSTRUCTION))
+          .addCFIIndex(Index);
+    };
+
+    if (DescribeSpill)
+      EmitCFI(MI, MCCFIInstruction::createRememberState(nullptr));
+
+    BuildMI(MBB, MI, MI->getDebugLoc(), InstrInfo->get(CDM::PUSH))
+        .addReg(Reg, RegState::Kill);
+
+    if (DescribeSpill) {
+      unsigned DwarfReg = RegInfo->getDwarfRegNum(Reg, true);
+      unsigned DwarfSP = RegInfo->getDwarfRegNum(CDM::SP, true);
+
+      SmallString<8> Expr;
+      raw_svector_ostream ExprOS(Expr);
+      ExprOS << static_cast<char>(dwarf::DW_OP_bregx);
+      encodeULEB128(DwarfSP, ExprOS);
+      encodeSLEB128(0, ExprOS);
+
+      SmallString<16> CFI;
+      raw_svector_ostream CFIOS(CFI);
+      CFIOS << static_cast<char>(dwarf::DW_CFA_expression);
+      encodeULEB128(DwarfReg, CFIOS);
+      encodeULEB128(Expr.size(), CFIOS);
+      CFIOS << Expr;
+
+      EmitCFI(MI, MCCFIInstruction::createEscape(nullptr, CFI));
     }
+
+    auto AfterMI = std::next(MI);
+    BuildMI(MBB, AfterMI, MI->getDebugLoc(), InstrInfo->get(CDM::POP), Reg);
+
+    if (DescribeSpill)
+      EmitCFI(AfterMI, MCCFIInstruction::createRestoreState(nullptr));
+
+    return Reg;
   }
 
   return 0;

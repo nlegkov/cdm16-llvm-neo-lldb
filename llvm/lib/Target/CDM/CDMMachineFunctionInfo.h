@@ -23,7 +23,7 @@ public:
       const override;
 
   // Whether the function has the CDM interrupt calling convention.
-  bool isInterruptHandler() { return IsInterruptHandler; }
+  bool isInterruptHandler() const { return IsInterruptHandler; }
 
   // When true, the function saves all registers in the prologue
   // and restores them in the epilogue. The function must be an ISR

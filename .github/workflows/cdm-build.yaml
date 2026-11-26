@@ -61,7 +61,8 @@ jobs:
       - name: Build LLVM
         run: |
           STATIC=${{ inputs.static-build && runner.os == 'Linux' && '--static' || '' }}
-          ./llvm/utils/cdm/build.py -j 2 -v $STATIC
+          ./llvm/utils/cdm/build.py -j 2 -v $STATIC \
+            --configure-flags="-DLLVM_DEFAULT_TARGET_TRIPLE=cdm-unknown-unknown-cocas"
       - name: Run end-to-end tests
         run: |
           TEST_CDM=${{ runner.os == 'Windows' && 'test-cdm.py' || 'test-cdm' }}
@@ -69,7 +70,11 @@ jobs:
       - name: Run lit tests
         run: |
           LLVM_LIT=${{ runner.os == 'Windows' && 'llvm-lit.py' || 'llvm-lit' }}
-          ./llvm/build/bin/$LLVM_LIT ./llvm/test/CodeGen/CDM ./llvm/test/MC/CDM
+          ./llvm/build/bin/$LLVM_LIT \
+            ./llvm/test/CodeGen/CDM \
+            ./llvm/test/MC/CDM \
+            ./clang/test/CodeGen/debug-info-cdm*.c \
+            ./lld/test/ELF/cdm-relocations.s
       - name: Compress artifacts
         if: inputs.upload
         run: |

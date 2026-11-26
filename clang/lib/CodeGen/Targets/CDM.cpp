@@ -40,6 +40,11 @@ void CDMTargetCodeGenInfo::setTargetAttributes(
       llvm::Function *F = cast<llvm::Function>(GV);
       F->setCallingConv(llvm::CallingConv::CDM_INTR);
       F->addFnAttr(llvm::Attribute::NoInline);
+
+      if (M.getCodeGenOpts().getDebugInfo() !=
+          llvm::codegenoptions::NoDebugInfo) {
+        F->setUWTableKind(llvm::UWTableKind::Async);
+      }
     }
   }
 }

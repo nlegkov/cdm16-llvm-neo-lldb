@@ -8,6 +8,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/Register.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include "MCTargetDesc/CDMMCTargetDesc.h"
@@ -114,18 +115,35 @@ void CDMInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 
 void CDMInstrInfo::adjustStackPtr(int64_t Amount, MachineBasicBlock &MBB,
                                   MachineBasicBlock::iterator I,
-                                  const DebugLoc &DL) const {
-  if (Amount == 0) {
+                                  const DebugLoc &DL, int64_t *CFAOffset,
+                                  MachineInstr::MIFlag Flag) const {
+  if (Amount == 0)
     return;
-  }
-  const int64_t ImmLimit = Amount < 0 ? -1024 : 1023;
+
+  auto EmitAdjustment = [&](int64_t Step) {
+    BuildMI(MBB, I, DL, get(CDM::ADDSPImm9)).addImm(Step).setMIFlag(Flag);
+
+    if (!CFAOffset)
+      return;
+
+    *CFAOffset -= Step;
+
+    MachineFunction &MF = *MBB.getParent();
+    unsigned Index =
+        MF.addFrameInst(MCCFIInstruction::cfiDefCfaOffset(nullptr, *CFAOffset));
+
+    BuildMI(MBB, I, DL, get(TargetOpcode::CFI_INSTRUCTION))
+        .addCFIIndex(Index)
+        .setMIFlag(Flag);
+  };
+
+  const int64_t ImmLimit = Amount < 0 ? -1024 : 1022;
   int64_t Rest = Amount;
 
-  for (; Rest < -1024 || Rest >= 1024; Rest -= ImmLimit) {
-    BuildMI(MBB, I, DL, get(CDM::ADDSPImm9)).addImm(ImmLimit);
-  }
+  for (; Rest < -1024 || Rest >= 1024; Rest -= ImmLimit)
+    EmitAdjustment(ImmLimit);
 
-  BuildMI(MBB, I, DL, get(CDM::ADDSPImm9)).addImm(Rest);
+  EmitAdjustment(Rest);
 }
 
 bool CDMInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {

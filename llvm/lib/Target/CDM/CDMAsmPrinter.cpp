@@ -33,6 +33,7 @@
 
 #include "CDM.h"
 #include "CDMMCInstLower.h"
+#include "CDMMachineFunctionInfo.h"
 #include "InstPrinter/CDMInstPrinter.h"
 #include "MCTargetDesc/CDMTargetStreamer.h"
 #include "TargetInfo/CDMTargetInfo.h"
@@ -63,6 +64,7 @@ public:
 
   void emitInstruction(const MachineInstr *Instr) override;
   void emitStartOfAsmFile(Module &Module) override;
+  void emitFunctionBodyStart() override;
 
   bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
                        const char *ExtraCode, raw_ostream &O) override;
@@ -77,6 +79,16 @@ public:
 };
 
 } // namespace
+
+void CDMAsmPrinter::emitFunctionBodyStart() {
+  if (!MF->getInfo<CDMMachineFunctionInfo>()->isInterruptHandler())
+    return;
+
+  if (!usesCFIWithoutEH() || getFunctionCFISectionType(*MF) == CFISection::None)
+    return;
+
+  OutStreamer->emitCFISignalFrame();
+}
 
 std::optional<int> CDMAsmPrinter::getSourceFileIndex(StringRef Checksum) {
   if (this->SourceFiles.contains(Checksum)) {
@@ -155,9 +167,9 @@ void CDMAsmPrinter::emitInstruction(const MachineInstr *Instr) {
     return;
   }
 
-  DILocation *DebugLoc = Instr->getDebugLoc().get();
-  if (DebugLoc) {
-    emitDebugLoc(*DebugLoc);
+  if (TM.getTargetTriple().getEnvironment() == Triple::Cocas) {
+    if (DILocation *DebugLoc = Instr->getDebugLoc().get())
+      emitDebugLoc(*DebugLoc);
   }
 
   CDMMCInstLower MCInstLower(OutContext, *this);
@@ -183,6 +195,9 @@ void CDMAsmPrinter::emitInstruction(const MachineInstr *Instr) {
 }
 
 void CDMAsmPrinter::emitStartOfAsmFile(Module &Module) {
+  if (TM.getTargetTriple().getEnvironment() != Triple::Cocas)
+    return;
+
   collectAndEmitSourceFiles(Module);
 
   auto FN = Module.getSourceFileName();

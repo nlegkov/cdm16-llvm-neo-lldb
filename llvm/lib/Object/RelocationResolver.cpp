@@ -600,6 +600,7 @@ static uint64_t resolveLoongArch(uint64_t Type, uint64_t Offset, uint64_t S,
 static bool supportsCDM(uint64_t Type) {
   switch (Type) {
   case ELF::R_CDM_16:
+  case ELF::R_CDM_32:
     return true;
   default:
     return false;
@@ -613,6 +614,8 @@ static uint64_t resolveCDM(uint64_t Type, uint64_t Offset, uint64_t S,
     return LocData;
   case ELF::R_CDM_16:
     return (S + LocData) & 0xFFFF;
+  case ELF::R_CDM_32:
+    return (S + LocData) & 0xFFFFFFFF;
   default:
     llvm_unreachable("Invalid relocation type");
   }

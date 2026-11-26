@@ -5,6 +5,7 @@
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCELFStreamer.h"
 #include "llvm/MC/MCInstPrinter.h"
 #include "llvm/MC/MCInstrAnalysis.h"
@@ -39,10 +40,11 @@ static MCAsmInfo *createCDMMCAsmInfo(const MCRegisterInfo &MRI,
                                      const MCTargetOptions &Options) {
   MCAsmInfo *MAI = new CDMMCAsmInfo(TT);
 
-  // TODO: DWARF support
-  //  unsigned SP = MRI.getDwarfRegNum(CDM::SP, true);
-  //  MCCFIInstruction Inst = MCCFIInstruction::createDefCfaRegister(nullptr,
-  //  SP); MAI->addInitialFrameState(Inst);
+  unsigned SP = MRI.getDwarfRegNum(CDM::SP, true);
+  unsigned PC = MRI.getDwarfRegNum(CDM::PC, true);
+
+  MAI->addInitialFrameState(MCCFIInstruction::cfiDefCfa(nullptr, SP, 2));
+  MAI->addInitialFrameState(MCCFIInstruction::createOffset(nullptr, PC, -2));
 
   return MAI;
 }
@@ -55,8 +57,7 @@ static MCInstrInfo *createCDMMCInstrInfo() {
 
 static MCRegisterInfo *createCDMMCRegisterInfo(const Triple &TT) {
   MCRegisterInfo *X = new MCRegisterInfo();
-  // TODO: figure out what 'RA' does (it is not used in generated function)
-  InitCDMMCRegisterInfo(X, CDM::PSR); // defined in Cpu0GenRegisterInfo.inc
+  InitCDMMCRegisterInfo(X, CDM::PC); // defined in Cpu0GenRegisterInfo.inc
   return X;
 }
 

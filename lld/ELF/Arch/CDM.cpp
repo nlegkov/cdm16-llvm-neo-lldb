@@ -34,6 +34,7 @@ RelExpr CDM::getRelExpr(RelType type, const Symbol &s,
                         const uint8_t *loc) const {
   switch (type) {
   case R_CDM_16:
+  case R_CDM_32:
     return R_ABS;
   default:
     Err(ctx) << getErrorLoc(ctx, loc) << "unknown relocation (" << type.v
@@ -49,6 +50,10 @@ void CDM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     // where RAM addresses start at 0x80000
     write16le(loc, val & 0xffff);
     break;
+  case R_CDM_32:
+    checkIntUInt(ctx, loc, val, 32, rel);
+    write32le(loc, val);
+    break;
   default:
     llvm_unreachable("unknown relocation");
   }
@@ -58,6 +63,8 @@ int64_t CDM::getImplicitAddend(const uint8_t *buf, RelType type) const {
   switch (type) {
   case R_CDM_16:
     return SignExtend64<16>(read16le(buf));
+  case R_CDM_32:
+    return SignExtend64<32>(read32le(buf));
   default:
     InternalErr(ctx, buf) << "cannot read addend for relocation " << type;
     return 0;

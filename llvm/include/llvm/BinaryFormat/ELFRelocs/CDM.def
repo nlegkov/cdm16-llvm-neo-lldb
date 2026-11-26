@@ -4,3 +4,4 @@
 
 ELF_RELOC(R_CDM_NONE,                  0)
 ELF_RELOC(R_CDM_16,                    1)
+ELF_RELOC(R_CDM_32,                    2)

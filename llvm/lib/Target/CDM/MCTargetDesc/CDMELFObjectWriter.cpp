@@ -27,10 +27,19 @@ CDMELFObjectWriter::CDMELFObjectWriter(uint8_t OSABI)
 unsigned CDMELFObjectWriter::getRelocType(const MCFixup &Fixup,
                                           const MCValue &Target,
                                           bool IsPCRel) const {
-  if ((unsigned)Fixup.getKind() != FK_Data_2) {
+  if (IsPCRel) {
+    reportError(Fixup.getLoc(), "PC-relative relocations are not supported");
+    return ELF::R_CDM_NONE;
+  }
+
+  switch (Fixup.getKind()) {
+  case FK_Data_2:
+    return ELF::R_CDM_16;
+  case FK_Data_4:
+    return ELF::R_CDM_32;
+  default:
     llvm_unreachable("Invalid fixup kind");
   }
-  return ELF::R_CDM_16;
 }
 
 std::unique_ptr<MCObjectTargetWriter> createCDMELFObjectWriter(uint8_t OSABI) {

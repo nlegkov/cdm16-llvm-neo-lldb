@@ -14,9 +14,11 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 
@@ -84,16 +86,55 @@ void CDMFrameLowering::emitPrologue(MachineFunction &MF,
   // Check if stack frame size exceeds limit
   ensureStackFrameAddressable(MF);
 
-  // Skip CSR pushes from spillCalleeSavedRegisters
-  while ((MBBI != MBB.end()) && MBBI->getFlag(MachineInstr::FrameSetup) &&
-         (MBBI->getOpcode() == CDM::PUSH)) {
+  auto EmitCFI = [&](const MCCFIInstruction &Inst) {
+    unsigned Index = MF.addFrameInst(Inst);
+    BuildMI(MBB, MBBI, DL, TII->get(TargetOpcode::CFI_INSTRUCTION))
+        .addCFIIndex(Index)
+        .setMIFlag(MachineInstr::FrameSetup);
+  };
+
+  // Describe saved registers and SP changes after each push.
+  int64_t CFAOffset = TFI.isInterruptHandler() ? 4 : 2;
+
+  if (TFI.isInterruptHandler()) {
+    const auto *TRI = STI.getRegisterInfo();
+    unsigned DwarfSP = TRI->getDwarfRegNum(CDM::SP, true);
+    unsigned DwarfPC = TRI->getDwarfRegNum(CDM::PC, true);
+    unsigned DwarfPSR = TRI->getDwarfRegNum(CDM::PSR, true);
+
+    EmitCFI(MCCFIInstruction::cfiDefCfa(nullptr, DwarfSP, CFAOffset));
+    EmitCFI(MCCFIInstruction::createOffset(nullptr, DwarfPC, -4));
+    EmitCFI(MCCFIInstruction::createOffset(nullptr, DwarfPSR, -2));
+  }
+
+  const bool NeedsScratchR6 =
+      hasFP(MF) &&
+      MFI.getStackSize() - TFI.getCaleeSavedSize() > BigFrameThreshold;
+
+  while (MBBI != MBB.end() && MBBI->getFlag(MachineInstr::FrameSetup) &&
+         MBBI->getOpcode() == CDM::PUSH) {
+    Register Reg = MBBI->getOperand(0).getReg();
+
+    // The temporary spill below still needs the incoming R6 value.
+    if (NeedsScratchR6 && Reg == CDM::R6)
+      MBBI->getOperand(0).setIsKill(false);
+    unsigned DwarfReg = STI.getRegisterInfo()->getDwarfRegNum(Reg, true);
+
     ++MBBI;
+    CFAOffset += 2;
+
+    EmitCFI(MCCFIInstruction::cfiDefCfaOffset(nullptr, CFAOffset));
+    EmitCFI(MCCFIInstruction::createOffset(nullptr, DwarfReg, -CFAOffset));
   }
 
   // FP points to the last callee saved register stored with CDM::PUSH.
   // CSRs are included in the frame (contiguous area ending at offset 0).
   if (hasFP(MF)) {
     BuildMI(MBB, MBBI, DL, TII->get(CDM::LDSP), CDM::FP);
+
+    unsigned DwarfFP = STI.getRegisterInfo()->getDwarfRegNum(CDM::FP, true);
+    EmitCFI(MCCFIInstruction::createDefCfaRegister(nullptr, DwarfFP));
+
     // Mark FP as live-in in every block except the entry.
     for (MachineBasicBlock &MBBJ : llvm::drop_begin(MF)) {
       MBBJ.addLiveIn(CDM::FP);
@@ -104,15 +145,31 @@ void CDMFrameLowering::emitPrologue(MachineFunction &MF,
   // so subtract their size from the total frame size.
   uint64_t StackSize = MFI.getStackSize() - TFI.getCaleeSavedSize();
 
-  if (hasFP(MF) && StackSize > BigFrameThreshold) {
-    // Alternative algorithm for large frames that relies on FP
-    BuildMI(MBB, MBBI, DL, TII->get(CDM::PUSH)).addReg(CDM::R6);
+  if (NeedsScratchR6) {
+    // Preserve the incoming R6 value even when the body does not use it.
+    if (!MF.getRegInfo().isLiveIn(CDM::R6))
+      MF.getRegInfo().addLiveIn(CDM::R6);
+    if (!MBB.isLiveIn(CDM::R6))
+      MBB.addLiveIn(CDM::R6);
+
+    // Temporarily use R6 to allocate a large frame.
+    unsigned DwarfR6 = STI.getRegisterInfo()->getDwarfRegNum(CDM::R6, true);
+
+    EmitCFI(MCCFIInstruction::createRememberState(nullptr));
+
+    BuildMI(MBB, MBBI, DL, TII->get(CDM::PUSH)).addReg(CDM::R6, RegState::Kill);
+    EmitCFI(MCCFIInstruction::createOffset(nullptr, DwarfR6, -(CFAOffset + 2)));
+
     BuildMI(MBB, MBBI, DL, TII->get(CDM::LDIImm16), CDM::R6)
         .addImm(-StackSize + 2);
     BuildMI(MBB, MBBI, DL, TII->get(CDM::ADDSPReg)).addReg(CDM::R6);
-    BuildMI(MBB, MBBI, DL, TII->get(CDM::LSW), CDM::R6).addImm(0);
+
+    BuildMI(MBB, MBBI, DL, TII->get(CDM::LSW), CDM::R6).addImm(-2);
+    EmitCFI(MCCFIInstruction::createRestoreState(nullptr));
   } else {
-    TII->adjustStackPtr(-StackSize, MBB, MBBI, DL);
+    TII->adjustStackPtr(-static_cast<int64_t>(StackSize), MBB, MBBI, DL,
+                        hasFP(MF) ? nullptr : &CFAOffset,
+                        MachineInstr::FrameSetup);
   }
 }
 
@@ -137,14 +194,52 @@ void CDMFrameLowering::emitEpilogue(MachineFunction &MF,
     --MBBI;
   }
 
+  auto EmitCFI = [&](const MCCFIInstruction &Inst) {
+    unsigned Index = MF.addFrameInst(Inst);
+    BuildMI(MBB, MBBI, DL, TII->get(TargetOpcode::CFI_INSTRUCTION))
+        .addCFIIndex(Index)
+        .setMIFlag(MachineInstr::FrameDestroy);
+  };
+
   // See emitPrologue
   uint64_t StackSize = MFI.getStackSize() - TFI.getCaleeSavedSize();
 
+  int64_t CFAOffset =
+      (TFI.isInterruptHandler() ? 4 : 2) + TFI.getCaleeSavedSize();
+  unsigned DwarfSP = STI.getRegisterInfo()->getDwarfRegNum(CDM::SP, true);
+
   if (hasFP(MF)) {
     BuildMI(MBB, MBBI, DL, TII->get(CDM::STSP)).addReg(CDM::FP, RegState::Kill);
+
+    EmitCFI(MCCFIInstruction::cfiDefCfa(nullptr, DwarfSP, CFAOffset));
   } else {
-    TII->adjustStackPtr(StackSize, MBB, MBBI, DL);
+    CFAOffset += static_cast<int64_t>(StackSize);
+
+    TII->adjustStackPtr(static_cast<int64_t>(StackSize), MBB, MBBI, DL,
+                        &CFAOffset, MachineInstr::FrameDestroy);
   }
+
+  while (MBBI != MBB.end() && MBBI->getOpcode() == CDM::POP) {
+    Register Reg = MBBI->getOperand(0).getReg();
+    unsigned DwarfReg = STI.getRegisterInfo()->getDwarfRegNum(Reg, true);
+
+    ++MBBI;
+    CFAOffset -= 2;
+
+    EmitCFI(MCCFIInstruction::createRestore(nullptr, DwarfReg));
+    EmitCFI(MCCFIInstruction::cfiDefCfaOffset(nullptr, CFAOffset));
+  }
+}
+
+StackOffset CDMFrameLowering::getFrameIndexReference(const MachineFunction &MF,
+                                                     int FI,
+                                                     Register &FrameReg) const {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  const CDMMachineFunctionInfo &TFI = *MF.getInfo<CDMMachineFunctionInfo>();
+
+  FrameReg = CDM::FP;
+  return StackOffset::getFixed(MFI.getObjectOffset(FI) +
+                               TFI.getCaleeSavedSize());
 }
 
 bool CDMFrameLowering::assignCalleeSavedSpillSlots(

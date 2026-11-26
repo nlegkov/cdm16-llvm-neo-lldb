@@ -36,6 +36,7 @@ CDMTargetMachine::CDMTargetMachine(const Target &T, const Triple &TT,
                                Reloc::Static, CodeModel::Small, OL),
       TLOF(std::make_unique<CDMTargetObjectFile>()),
       DataLayout(computeDataLayout()) {
+  this->Options.EnableCFIFixup = true;
   initAsmInfo();
 }
 

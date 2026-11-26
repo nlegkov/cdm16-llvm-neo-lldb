@@ -129,7 +129,9 @@ public:
                    bool RenamableSrc = false) const override;
 
   void adjustStackPtr(int64_t Amount, MachineBasicBlock &MBB,
-                      MachineBasicBlock::iterator I, const DebugLoc &DL) const;
+                      MachineBasicBlock::iterator I, const DebugLoc &DL,
+                      int64_t *CFAOffset = nullptr,
+                      MachineInstr::MIFlag Flag = MachineInstr::NoFlags) const;
 
   bool expandPostRAPseudo(MachineInstr &MI) const override;
 

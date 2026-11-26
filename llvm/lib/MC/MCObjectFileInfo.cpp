@@ -372,6 +372,9 @@ void MCObjectFileInfo::initELFMCObjectFileInfo(const Triple &T, bool Large) {
   case Triple::xtensa:
     FDECFIEncoding = dwarf::DW_EH_PE_sdata4;
     break;
+  case Triple::cdm:
+    FDECFIEncoding = dwarf::DW_EH_PE_udata2;
+    break;
   default:
     FDECFIEncoding = dwarf::DW_EH_PE_pcrel | dwarf::DW_EH_PE_sdata4;
     break;

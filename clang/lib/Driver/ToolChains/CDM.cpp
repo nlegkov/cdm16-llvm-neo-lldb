@@ -68,16 +68,7 @@ CDMToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
   bool MemModelValid = checkMemoryModel(getDriver(), Args);
 
   for (Arg *A : Args) {
-    if (A->getOption().matches(options::OPT_DebugInfo_Group)) {
-      // Remove all debug-related options and warn user, that they're ignored
-      // TODO: Remove this when DWARF debug info is supported
-      getDriver().Diag(clang::diag::warn_drv_unsupported_option_for_target)
-          << A->getAsString(Args) << getTripleString();
-
-      // Claim arg to avoid getting unused argument warn
-      A->claim();
-    } else if (!MemModelValid &&
-               A->getOption().matches(options::OPT_mmem_model_EQ)) {
+    if (!MemModelValid && A->getOption().matches(options::OPT_mmem_model_EQ)) {
       // Remove all -mmem-model= arguments if the last one is invalid.
       A->claim();
     } else {
